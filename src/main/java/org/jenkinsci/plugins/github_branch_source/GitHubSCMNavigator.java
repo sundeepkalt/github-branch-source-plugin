@@ -39,24 +39,8 @@ import hudson.console.HyperlinkNote;
 import hudson.model.Action;
 import hudson.model.Item;
 import hudson.model.TaskListener;
-import hudson.plugins.git.GitSCM;
 import hudson.util.FormValidation;
 import hudson.util.ListBoxModel;
-import java.io.FileNotFoundException;
-import java.io.IOException;
-import java.util.ArrayList;
-import java.util.Arrays;
-import java.util.Collection;
-import java.util.Collections;
-import java.util.EnumSet;
-import java.util.HashSet;
-import java.util.Iterator;
-import java.util.List;
-import java.util.Set;
-import java.util.logging.Level;
-import java.util.logging.Logger;
-import java.util.stream.Collectors;
-import javax.inject.Inject;
 import jenkins.model.Jenkins;
 import jenkins.plugins.git.traits.GitBrowserSCMSourceTrait;
 import jenkins.scm.api.SCMNavigator;
@@ -73,7 +57,6 @@ import jenkins.scm.api.trait.SCMNavigatorRequest;
 import jenkins.scm.api.trait.SCMNavigatorTrait;
 import jenkins.scm.api.trait.SCMNavigatorTraitDescriptor;
 import jenkins.scm.api.trait.SCMSourceTrait;
-import jenkins.scm.api.trait.SCMSourceTraitDescriptor;
 import jenkins.scm.api.trait.SCMTrait;
 import jenkins.scm.api.trait.SCMTraitDescriptor;
 import jenkins.scm.impl.UncategorizedSCMSourceCategory;
@@ -104,6 +87,19 @@ import org.kohsuke.stapler.DataBoundSetter;
 import org.kohsuke.stapler.QueryParameter;
 import org.kohsuke.stapler.interceptor.RequirePOST;
 
+import javax.inject.Inject;
+import java.io.FileNotFoundException;
+import java.io.IOException;
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.EnumSet;
+import java.util.HashSet;
+import java.util.Iterator;
+import java.util.List;
+import java.util.Set;
+import java.util.logging.Level;
+import java.util.logging.Logger;
+
 import static org.jenkinsci.plugins.github_branch_source.Connector.isCredentialValid;
 
 public class GitHubSCMNavigator extends SCMNavigator {
@@ -113,6 +109,13 @@ public class GitHubSCMNavigator extends SCMNavigator {
      */
     @NonNull
     private final String repoOwner;
+
+    /**
+     * The owner of the repositories to navigate.
+     */
+    @NonNull
+    private final String teamSlug;
+
     /**
      * The API endpoint for the GitHub server.
      */
@@ -214,8 +217,9 @@ public class GitHubSCMNavigator extends SCMNavigator {
      * @since 2.2.0
      */
     @DataBoundConstructor
-    public GitHubSCMNavigator(String repoOwner) {
+    public GitHubSCMNavigator(String repoOwner, String teamSlug) {
         this.repoOwner = StringUtils.defaultString(repoOwner);
+        this.teamSlug = StringUtils.defaultString(teamSlug);
         this.traits = new ArrayList<>();
     }
 
@@ -233,8 +237,8 @@ public class GitHubSCMNavigator extends SCMNavigator {
     @Deprecated
     @Restricted(DoNotUse.class)
     @RestrictedSince("2.2.0")
-    public GitHubSCMNavigator(String apiUri, String repoOwner, String scanCredentialsId, String checkoutCredentialsId) {
-        this(repoOwner);
+    public GitHubSCMNavigator(String apiUri, String repoOwner,  String teamSlug, String scanCredentialsId, String checkoutCredentialsId) {
+        this(repoOwner, teamSlug);
         setCredentialsId(scanCredentialsId);
         setApiUri(apiUri);
         // legacy constructor means legacy defaults
@@ -302,6 +306,15 @@ public class GitHubSCMNavigator extends SCMNavigator {
     @NonNull
     public String getRepoOwner() {
         return repoOwner;
+    }
+
+    /**
+     * Gets the name of the owner who's repositories will be navigated.
+     * @return the name of the owner who's repositories will be navigated.
+     */
+    @NonNull
+    public String getTeamSlug() {
+        return teamSlug;
     }
 
     /**
@@ -979,21 +992,41 @@ public class GitHubSCMNavigator extends SCMNavigator {
                 }
                 if (org != null && repoOwner.equalsIgnoreCase(org.getLogin())) {
                     listener.getLogger().println(GitHubConsoleNote.create(System.currentTimeMillis(), String.format(
-                            "Looking up repositories of organization %s", repoOwner
+                            "Looking up repositories of organization %s  team %s", repoOwner, teamSlug
                     )));
-                    for (GHRepository repo : org.listRepositories(100)) {
-                        Connector.checkApiRateLimit(listener, github);
-                        if (request.process(repo.getName(), sourceFactory, null, witness)) {
-                            listener.getLogger()
-                                    .println(GitHubConsoleNote.create(System.currentTimeMillis(), String.format(
-                                            "%d repositories were processed (query completed)", witness.getCount()
-                                    )));
+                    if (StringUtils.isNotEmpty(teamSlug)) {
+                        listener.getLogger().println(GitHubConsoleNote.create(System.currentTimeMillis(), String.format(
+                                "Attempting to use teamSlug for listing repos %s team %s", repoOwner, teamSlug
+                                                                                                                       )));
+                        for (GHRepository repo : org.getTeamBySlug(teamSlug).listRepositories()) {
+                            Connector.checkApiRateLimit(listener, github);
+                            if (request.process(repo.getName(), sourceFactory, null, witness)) {
+                                listener.getLogger()
+                                        .println(GitHubConsoleNote.create(System.currentTimeMillis(), String.format(
+                                                "%d repositories were processed (query completed)", witness.getCount()
+                                                                                                                   )));
+                            }
                         }
+                        listener.getLogger().println(GitHubConsoleNote.create(System.currentTimeMillis(), String.format(
+                                "%d repositories were processed", witness.getCount()
+                                                                                                                       )));
+                        return;
+                    } else {
+                        for (GHRepository repo : org.listRepositories(100)) {
+                            Connector.checkApiRateLimit(listener, github);
+                            if (request.process(repo.getName(), sourceFactory, null, witness)) {
+                                listener.getLogger()
+                                        .println(GitHubConsoleNote.create(System.currentTimeMillis(), String.format(
+                                                "%d repositories were processed (query completed)", witness.getCount()
+                                                                                                                   )));
+                            }
+                        }
+                        listener.getLogger().println(GitHubConsoleNote.create(System.currentTimeMillis(), String.format(
+                                "%d repositories were processed", witness.getCount()
+                                                                                                                       )));
+                        return;
                     }
-                    listener.getLogger().println(GitHubConsoleNote.create(System.currentTimeMillis(), String.format(
-                            "%d repositories were processed", witness.getCount()
-                    )));
-                    return;
+
                 }
 
                 GHUser user = null;
@@ -1311,7 +1344,7 @@ public class GitHubSCMNavigator extends SCMNavigator {
         @SuppressWarnings("unchecked")
         @Override
         public SCMNavigator newInstance(String name) {
-            GitHubSCMNavigator navigator = new GitHubSCMNavigator(name);
+            GitHubSCMNavigator navigator = new GitHubSCMNavigator(name, "");
             navigator.setTraits((List) getTraitsDefaults());
             return navigator;
         }
